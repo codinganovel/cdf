@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 
 	"github.com/codinganovel/autocd-go"
 )
@@ -42,27 +45,34 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Scanning from: %s (depth: %d)\n", startPath, *depth)
 	}
 	
-	directories, err := scanDirectories(startPath, *depth, !*noIgnore)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error scanning directories: %v\n", err)
-		os.Exit(1)
-	}
+	// Create a context for cancellation
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	
-	if len(directories) == 0 {
-		fmt.Fprintf(os.Stderr, "No directories found\n")
-		os.Exit(1)
-	}
+	// Handle interrupt signals for clean shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		if *debug {
+			fmt.Fprintf(os.Stderr, "\nReceived interrupt, cleaning up...\n")
+		}
+		cancel()
+	}()
 	
-	if *debug {
-		fmt.Fprintf(os.Stderr, "Found %d directories\n", len(directories))
-	}
+	// For fast startup, use async scanning with batches
+	dirChan := scanDirectoriesAsyncCtx(ctx, startPath, *depth, !*noIgnore, 50)
 	
-	selectedPath, err := runTUI(directories)
+	selectedPath, err := runTUIAsyncCtx(ctx, dirChan)
 	if err != nil {
 		if *debug {
 			fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
 		}
-		os.Exit(2)
+		// Check if it was a cancellation vs actual error
+		if err == context.Canceled || err.Error() == "cancelled" {
+			os.Exit(2)
+		}
+		os.Exit(1)
 	}
 	
 	if *debug {
