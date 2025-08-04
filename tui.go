@@ -155,7 +155,7 @@ func runTUIAsyncCtx(ctx context.Context, dirChan <-chan DirBatch) (string, error
 // handleKeyEventState handles keyboard input with proper state management
 func handleKeyEventState(event *tcell.EventKey, state *uiState, screen tcell.Screen) int {
 	_, height := screen.Size()
-	maxDisplay := height - 5
+	maxDisplay := height - 7 // Updated to match new layout spacing
 	
 	state.mu.Lock()
 	defer state.mu.Unlock()
@@ -197,7 +197,7 @@ func handleKeyEventState(event *tcell.EventKey, state *uiState, screen tcell.Scr
 
 func handleKeyEvent(event *tcell.EventKey, query *string, selected *int, matches *[]fuzzy.Match, directories []string, screen tcell.Screen, scrollOffset int) (int, int) {
 	_, height := screen.Size()
-	maxDisplay := height - 5
+	maxDisplay := height - 7 // Updated to match new layout spacing
 	
 	switch event.Key() {
 	case tcell.KeyEscape:
@@ -250,22 +250,63 @@ func updateDisplayAsync(screen tcell.Screen, matches []fuzzy.Match, query string
 	
 	width, height := screen.Size()
 	
-	style := tcell.StyleDefault.Background(tcell.ColorBlack).Foreground(tcell.ColorWhite)
-	promptStyle := tcell.StyleDefault.Background(tcell.ColorBlack).Foreground(tcell.ColorGreen)
+	// Calculate layout dimensions with more generous spacing
+	infoPanelWidth := 14 // Slightly wider for better readability
+	if width > 80 {
+		infoPanelWidth = 18 // Even wider panel for larger terminals
+	}
+	contentWidth := width - infoPanelWidth - 1 // -1 for divider
+	dividerX := contentWidth
 	
-	prompt := fmt.Sprintf("cdf > %s", query)
+	// Enhanced styles with bold text for prominence
+	style := tcell.StyleDefault.Background(tcell.ColorBlack).Foreground(tcell.ColorWhite)
+	promptStyle := tcell.StyleDefault.Background(tcell.ColorBlack).Foreground(tcell.ColorGreen).Bold(true)
+	dividerStyle := tcell.StyleDefault.Background(tcell.ColorBlack).Foreground(tcell.ColorGray)
+	selectedStyle := tcell.StyleDefault.Background(tcell.ColorDarkBlue).Foreground(tcell.ColorWhite).Bold(true)
+	headerStyle := tcell.StyleDefault.Background(tcell.ColorBlack).Foreground(tcell.ColorBlue).Bold(true)
+	statusStyle := tcell.StyleDefault.Background(tcell.ColorBlack).Foreground(tcell.ColorYellow).Bold(true)
+	helpStyle := tcell.StyleDefault.Background(tcell.ColorBlack).Foreground(tcell.ColorGray).Bold(true)
+	
+	// Draw prominent prompt with cursor and extra spacing
+	prompt := fmt.Sprintf("  cdf > %s_", query)
+	if len(prompt) > contentWidth {
+		prompt = prompt[:contentWidth-3] + "..."
+	}
 	drawText(screen, 0, 0, promptStyle, prompt)
 	
+	// Add empty line for breathing room
 	drawText(screen, 0, 1, style, "")
 	
-	startY := 3
-	maxDisplay := height - 5
+	// Draw stronger horizontal divider under prompt
+	for x := 0; x < contentWidth; x++ {
+		screen.SetContent(x, 2, '═', nil, dividerStyle)
+	}
+	
+	// Draw vertical divider with double-line character for prominence
+	for y := 0; y < height; y++ {
+		screen.SetContent(dividerX, y, '║', nil, dividerStyle)
+	}
+	
+	// Draw info panel header with bold styling
+	drawText(screen, dividerX+2, 0, headerStyle, fmt.Sprintf("📁 %d dirs", totalDirs))
+	
+	// Draw scanning status with emphasis
+	scanPhase := "✓ Complete"
+	if !scanComplete {
+		scanPhase = "⟳ Scanning..."
+	}
+	drawText(screen, dividerX+2, 1, statusStyle, scanPhase)
+	
+	// Directory list area with more spacing
+	startY := 4 // Increased from 2 for more breathing room
+	maxDisplay := height - 7 // Leave more room for spacing and status
 	
 	endIndex := scrollOffset + maxDisplay
 	if endIndex > len(matches) {
 		endIndex = len(matches)
 	}
 	
+	// Draw directory entries with enhanced spacing and styling
 	for i := scrollOffset; i < endIndex; i++ {
 		if i >= len(matches) {
 			break
@@ -273,36 +314,63 @@ func updateDisplayAsync(screen tcell.Screen, matches []fuzzy.Match, query string
 		
 		match := matches[i]
 		dir := formatMatch(match)
-		score := getMatchScore(match)
 		
-		line := fmt.Sprintf("  📁 %-50s [%d%%]", dir, score)
-		if len(line) > width-2 {
-			line = line[:width-2]
+		// Format directory line with more prominent selection indicator and spacing
+		var line string
+		if i == selected {
+			line = fmt.Sprintf("  ▶  %s", dir)
+		} else {
+			line = fmt.Sprintf("     %s", dir)
+		}
+		
+		// Truncate if too long for content area
+		if len(line) > contentWidth {
+			line = line[:contentWidth-3] + "..."
 		}
 		
 		displayIndex := i - scrollOffset
+		y := startY + displayIndex
+		
 		if i == selected {
-			selectedStyle := tcell.StyleDefault.Background(tcell.ColorDarkBlue).Foreground(tcell.ColorWhite)
-			drawText(screen, 0, startY+displayIndex, selectedStyle, line)
+			drawText(screen, 0, y, selectedStyle, line)
 		} else {
-			drawText(screen, 0, startY+displayIndex, style, line)
+			drawText(screen, 0, y, style, line)
 		}
 	}
 	
-	var status string
-	scanStatus := ""
-	if !scanComplete {
-		scanStatus = fmt.Sprintf(" • Scanning... (%d dirs)", totalDirs)
+	// Add spacing before status section
+	statusY := height - 3
+	
+	// Draw stronger horizontal divider above status
+	for x := 0; x < contentWidth; x++ {
+		screen.SetContent(x, statusY, '═', nil, dividerStyle)
 	}
 	
-	if len(matches) > maxDisplay {
+	// Draw bottom status with enhanced styling and spacing
+	var status string
+	if len(matches) == 0 {
+		status = "  📭 No matches found"
+	} else if len(matches) > maxDisplay {
 		start := scrollOffset + 1
 		end := endIndex
-		status = fmt.Sprintf("[%d matches, showing %d-%d]%s • ↑↓ navigate • Enter select • Esc/Ctrl+Q cancel", len(matches), start, end, scanStatus)
+		status = fmt.Sprintf("  📂 %d matches • showing %d-%d", len(matches), start, end)
 	} else {
-		status = fmt.Sprintf("[%d matches]%s • ↑↓ navigate • Enter select • Esc/Ctrl+Q cancel", len(matches), scanStatus)
+		status = fmt.Sprintf("  📂 %d matches • showing all", len(matches))
 	}
-	drawText(screen, 0, height-1, style, status)
+	
+	if len(status) > contentWidth {
+		status = status[:contentWidth-3] + "..."
+	}
+	drawText(screen, 0, height-2, statusStyle, status)
+	
+	// Draw enhanced help text in info panel with better spacing
+	helpY := 4
+	if height > 12 {
+		drawText(screen, dividerX+2, helpY, helpStyle, "Controls:")
+		drawText(screen, dividerX+2, helpY+2, helpStyle, "↑↓ Navigate")
+		drawText(screen, dividerX+2, helpY+3, helpStyle, "⏎  Select")
+		drawText(screen, dividerX+2, helpY+4, helpStyle, "⎋  Quit")
+	}
 }
 
 func drawText(screen tcell.Screen, x, y int, style tcell.Style, text string) {

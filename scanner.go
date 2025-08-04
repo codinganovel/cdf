@@ -70,8 +70,127 @@ func scanDirectoriesAsyncCtx(ctx context.Context, root string, maxDepth int, use
 	return scanWithConfigCtx(ctx, config)
 }
 
+// scanDirectoriesAsyncCtxExcluding scans directories while excluding a specific path
+func scanDirectoriesAsyncCtxExcluding(ctx context.Context, root string, maxDepth int, useIgnorePatterns bool, batchSize int, excludePath string) <-chan DirBatch {
+	config := ScanConfig{
+		Root:              root,
+		MaxDepth:          maxDepth,
+		UseIgnorePatterns: useIgnorePatterns,
+		InitialBatchSize:  batchSize,
+		MaxBatchSize:      200,
+	}
+	return scanWithConfigCtxExcluding(ctx, config, excludePath)
+}
+
 func scanWithConfig(config ScanConfig) <-chan DirBatch {
 	return scanWithConfigCtx(context.Background(), config)
+}
+
+func scanWithConfigCtxExcluding(ctx context.Context, config ScanConfig, excludePath string) <-chan DirBatch {
+	// Use smaller buffer to provide backpressure
+	ch := make(chan DirBatch, 2)
+	
+	go func() {
+		defer close(ch)
+		
+		var batch []string
+		batch = make([]string, 0, config.InitialBatchSize)
+		currentBatchSize := config.InitialBatchSize
+		dirCount := 0
+		
+		// Custom walk function that respects context cancellation and excludes a path
+		err := walkDirContext(ctx, config.Root, func(path string, d fs.DirEntry, err error) error {
+			// Check for cancellation
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+			
+			if err != nil {
+				// Log permission errors but continue scanning
+				return nil
+			}
+			
+			if !d.IsDir() {
+				return nil
+			}
+			
+			if path == config.Root {
+				return nil
+			}
+			
+			// Skip the excluded path and all its subdirectories
+			if excludePath != "" && (path == excludePath || strings.HasPrefix(path, excludePath+string(filepath.Separator))) {
+				return filepath.SkipDir
+			}
+			
+			if !isWithinDepth(path, config.Root, config.MaxDepth) {
+				return filepath.SkipDir
+			}
+			
+			if config.UseIgnorePatterns && shouldIgnore(d.Name()) {
+				return filepath.SkipDir
+			}
+			
+			batch = append(batch, path)
+			dirCount++
+			
+			// Send batch when it reaches the size limit
+			if len(batch) >= currentBatchSize {
+				// Create new slice to avoid data races
+				sendBatch := make([]string, len(batch))
+				copy(sendBatch, batch)
+				
+				select {
+				case ch <- DirBatch{
+					Directories: sendBatch,
+					Done:        false,
+				}:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				
+				// Adaptive batch sizing: increase batch size for large directories
+				if dirCount > 500 && currentBatchSize < config.MaxBatchSize {
+					currentBatchSize = min(currentBatchSize*2, config.MaxBatchSize)
+				}
+				
+				batch = batch[:0] // Reset slice but keep capacity
+			}
+			
+			return nil
+		})
+		
+		// Handle context cancellation
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
+		
+		// Send any remaining directories
+		if len(batch) > 0 || err != nil {
+			select {
+			case ch <- DirBatch{
+				Directories: batch,
+				Done:        true,
+				Err:         err,
+			}:
+			case <-ctx.Done():
+			}
+		} else {
+			// Send done signal even if no remaining batch
+			select {
+			case ch <- DirBatch{
+				Directories: nil,
+				Done:        true,
+				Err:         err,
+			}:
+			case <-ctx.Done():
+			}
+		}
+	}()
+	
+	return ch
 }
 
 func scanWithConfigCtx(ctx context.Context, config ScanConfig) <-chan DirBatch {

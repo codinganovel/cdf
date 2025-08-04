@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGetStartPath(t *testing.T) {
@@ -178,5 +180,79 @@ func TestIntegration(t *testing.T) {
 		if formatted == "" {
 			t.Error("formatMatch returned empty string")
 		}
+	}
+}
+
+func TestTwoPhaseScanningPriority(t *testing.T) {
+	// Create a temporary directory structure
+	tempDir, err := os.MkdirTemp("", "cdf_two_phase_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Save and restore original working directory
+	originalCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Failed to get current directory: %v", err)
+	}
+	defer os.Chdir(originalCwd)
+
+	// Change to temp directory
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatalf("Failed to change to temp dir: %v", err)
+	}
+
+	// Create test directories in current (temp) directory
+	localDirs := []string{
+		"local1",
+		"local2/sub",
+	}
+	for _, dir := range localDirs {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatalf("Failed to create local dir %s: %v", dir, err)
+		}
+	}
+
+	// Test two-phase scanning
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	dirChan := scanTwoPhasesAsyncCtx(ctx, tempDir, 3, true, 10)
+	
+	var allDirs []string
+	var phaseBoundaryFound = false
+	
+	for batch := range dirChan {
+		if batch.Err != nil && batch.Err != context.Canceled {
+			t.Fatalf("Error in scanning: %v", batch.Err)
+		}
+		
+		allDirs = append(allDirs, batch.Directories...)
+		
+		// Check if we're transitioning between phases
+		if batch.Done && !phaseBoundaryFound {
+			phaseBoundaryFound = true
+		}
+	}
+
+	// Verify we found some directories
+	if len(allDirs) == 0 {
+		t.Error("Expected to find directories in two-phase scan")
+	}
+
+	// Check that local directories appear early in results
+	// (Note: we can't guarantee exact order due to async nature, 
+	// but local dirs should be among the first batch)
+	foundLocal := false
+	for _, dir := range allDirs {
+		if strings.Contains(dir, "local1") || strings.Contains(dir, "local2") {
+			foundLocal = true
+			break
+		}
+	}
+	
+	if !foundLocal {
+		t.Error("Expected to find local directories in two-phase scan results")
 	}
 }

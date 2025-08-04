@@ -231,3 +231,21 @@ Because life's too short to `cd` manually to deeply nested directories.
 ---
 
 *"Finally, a fuzzy finder that gets it." - Every developer who navigates directories*
+
+```
+    ╭─────────╮
+   ╱           ╲
+  ╱  ◉ ░░░ ◉   ╲
+ ╱   ┌─────┐    ╲
+╱    │ ███ │     ╲
+│    │ ▓▓▓ │      │
+│    └─────┘      │
+│  ◦ ◦ ◦ ◦ ◦ ◦   │
+│ ░░░░░░░░░░░░░   │
+╲                ╱
+ ╲______________╱
+      │    │
+    ╭─┴────┴─╮
+    │ ∞ FLUX │
+    ╰────────╯
+```

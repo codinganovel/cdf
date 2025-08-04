@@ -60,8 +60,8 @@ func main() {
 		cancel()
 	}()
 	
-	// For fast startup, use async scanning with batches
-	dirChan := scanDirectoriesAsyncCtx(ctx, startPath, *depth, !*noIgnore, 50)
+	// Two-phase scanning for prioritized results
+	dirChan := scanTwoPhasesAsyncCtx(ctx, startPath, *depth, !*noIgnore, 50)
 	
 	selectedPath, err := runTUIAsyncCtx(ctx, dirChan)
 	if err != nil {
@@ -102,6 +102,61 @@ func getStartPath() (string, error) {
 	}
 	
 	return os.Getwd()
+}
+
+// scanTwoPhasesAsyncCtx implements two-phase scanning:
+// Phase 1: Current working directory (fast results)
+// Phase 2: Root directory excluding current directory (broader coverage)
+func scanTwoPhasesAsyncCtx(ctx context.Context, startPath string, maxDepth int, useIgnorePatterns bool, batchSize int) <-chan DirBatch {
+	ch := make(chan DirBatch, 2)
+	
+	go func() {
+		defer close(ch)
+		
+		cwd, err := os.Getwd()
+		if err != nil {
+			// Fallback to single-phase if we can't get CWD
+			singlePhase := scanDirectoriesAsyncCtx(ctx, startPath, maxDepth, useIgnorePatterns, batchSize)
+			for batch := range singlePhase {
+				select {
+				case ch <- batch:
+				case <-ctx.Done():
+					return
+				}
+			}
+			return
+		}
+		
+		// Phase 1: Scan current working directory first
+		phase1Chan := scanDirectoriesAsyncCtx(ctx, cwd, maxDepth, useIgnorePatterns, batchSize)
+		for batch := range phase1Chan {
+			select {
+			case ch <- DirBatch{
+				Directories: batch.Directories,
+				Done:        false, // Not done yet, phase 2 coming
+				Err:         batch.Err,
+			}:
+			case <-ctx.Done():
+				return
+			}
+			
+			if batch.Err != nil {
+				return
+			}
+		}
+		
+		// Phase 2: Scan from root, excluding current directory
+		phase2Chan := scanDirectoriesAsyncCtxExcluding(ctx, "/", maxDepth, useIgnorePatterns, batchSize, cwd)
+		for batch := range phase2Chan {
+			select {
+			case ch <- batch:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	
+	return ch
 }
 
 func showUsage() {
